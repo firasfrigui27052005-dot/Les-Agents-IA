@@ -1,2 +1,29 @@
-# Les-Agents-IA
-Agent IA est un projet informatique qui implémente un agent intelligent capable de comprendre et analyser des messages en langage naturel. Il détecte automatiquement l’intention de l’utilisateur (intent classification), extrait des informations utiles (NER simple), maintient un état de dialogue et réalise des actions simulées.
+# 🤖 Agent IA – Projet Informatique
+
+Ce projet implémente un **Agent IA minimal** capable de comprendre des messages en langage naturel, détecter l’intention de l’utilisateur, extraire des informations utiles (montant, date, nom, ville), gérer un état de dialogue et exécuter des actions simulées.
+
+---
+
+## 🚀 Fonctionnalités
+
+- **Intent Classification** (avec TF-IDF + Logistic Regression)
+- **Extraction d’entités (NER simple)** :
+  - Montant (ex: "50 dinars")
+  - Date (ex: "demain", "10h")
+  - Cible (ex: "à Amine")
+- **Gestion d’un état de dialogue** :
+  - Confirmation d’un transfert
+  - Historique des messages
+- **Actions simulées** :
+  - Météo
+  - Solde bancaire
+  - Transfert d’argent
+  - Création d’événement
+- **Deux modes d’utilisation** :
+  - 🖥️ **CLI** (terminal)
+  - 🌍 **API REST** via FastAPI
+
+---
+
+## 📂 Structure du projet
+
