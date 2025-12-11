@@ -1,0 +1,237 @@
+# agent_ia.py
+# Agent IA minimal : intent classification, NER simple, dialogue state, response templates
+# Usage:
+# 1) en CLI: python agent_ia.py
+# 2) en API: uvicorn agent_ia:app --reload
+
+from typing import Dict, Any
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+import re
+import json
+import random
+
+# --- Dataset minimal pour l'entraînement (exemples d'intents) ---
+TRAINING_DATA = [
+    ("bonjour", "greeting"),
+    ("salut", "greeting"),
+    ("bonsoir", "greeting"),
+    ("je veux créer un rendez-vous", "create_event"),
+    ("ajouter un événement demain à 10h", "create_event"),
+    ("programmer un rappel pour acheter du pain", "create_event"),
+    ("quelle est la météo aujourd'hui", "get_weather"),
+    ("va-t-il pleuvoir demain", "get_weather"),
+    ("donne-moi la météo à tunis", "get_weather"),
+    ("merci", "thanks"),
+    ("au revoir", "goodbye"),
+    ("stop", "goodbye"),
+    ("quel est mon solde", "get_balance"),
+    ("affiche mon solde", "get_balance"),
+    ("je veux transférer 50 dinars à amine", "transfer_money"),
+    ("transfert 20 TND vers adresse", "transfer_money"),
+    ("aide", "help"),
+    ("que peux-tu faire", "help"),
+]
+
+# Templates de réponse
+TEMPLATES = {
+    "greeting": ["Bonjour ! Comment puis-je t'aider aujourd'hui ?", "Salut ! En quoi puis-je t'aider ?"],
+    "create_event": ["D'accord, quel titre pour l'événement ?", "Très bien — donne moi la date et l'heure."],
+    "get_weather": ["Pour quelle ville veux-tu la météo ?", "Je peux regarder la météo — quelle ville ?"],
+    "thanks": ["Avec plaisir !", "Je t'en prie 🙂"],
+    "goodbye": ["Au revoir !", "À bientôt !"],
+    "get_balance": ["Ton solde est de **{balance} TND**.", "Solde actuel : {balance} TND."],
+    "transfer_money": ["Je prépare le transfert de {amount} TND vers {target}. Confirmer ? (oui/non)"],
+    "confirm_transfer": ["Transfert de {amount} TND vers {target} effectué ✅", "C'est fait : {amount} TND envoyés à {target}."],
+    "fallback": ["Désolé, je n'ai pas compris. Peux-tu reformuler ?", "Je n'ai pas saisi — tu peux préciser ?"],
+    "help": ["Je peux créer des événements, donner la météo, consulter ton solde, transférer de l'argent. Essaie: 'ajouter un événement demain 15h'."],
+}
+
+# --- Simple NER / extraction (règles) ---
+def extract_amount(text: str):
+    m = re.search(r'(\d+(?:[.,]\d+)?)\s*(tnd|dinars|dt|dinar|td|tn)', text.lower())
+    if m:
+        amt = m.group(1).replace(',', '.')
+        try:
+            return float(amt)
+        except:
+            return None
+    # nombres sans unité
+    m2 = re.search(r'(\d+(?:[.,]\d+)?)', text)
+    if m2:
+        try:
+            return float(m2.group(1).replace(',', '.'))
+        except:
+            return None
+    return None
+
+def extract_datetime(text: str):
+    # très basique : cherche 'demain', 'aujourd\'hui' ou heure
+    if "demain" in text.lower():
+        return "demain"
+    if "aujourd" in text.lower():
+        return "aujourd'hui"
+    m = re.search(r'(\d{1,2})h', text.lower())
+    if m:
+        return f"{m.group(1)}:00"
+    return None
+
+def extract_target(text: str):
+    # essaie d'extraire un nom propre simple (mot après 'à' ou 'vers')
+    m = re.search(r'(?:à|vers|à)\s+([A-Za-zÀ-ÖØ-öø-ÿ0-9_-]+)', text)
+    if m:
+        return m.group(1)
+    # fallback: dernier mot
+    tokens = text.strip().split()
+    if tokens:
+        return tokens[-1]
+    return "inconnu"
+
+# --- Intent classifier simple ---
+class IntentClassifier:
+    def __init__(self, training_data):
+        texts = [t for t, label in training_data]
+        labels = [label for t, label in training_data]
+        self.vectorizer = TfidfVectorizer(ngram_range=(1,2))
+        X = self.vectorizer.fit_transform(texts)
+        self.model = LogisticRegression(max_iter=200)
+        self.model.fit(X, labels)
+        self.labels = list(set(labels))
+    def predict(self, text: str):
+        x = self.vectorizer.transform([text])
+        pred = self.model.predict(x)[0]
+        proba = max(self.model.predict_proba(x)[0])
+        return pred, proba
+
+# --- Dialogue state tracker (session simple) ---
+class DialogueState:
+    def __init__(self):
+        self.sessions: Dict[str, Dict[str, Any]] = {}
+    def get(self, session_id: str):
+        return self.sessions.setdefault(session_id, {"history": [], "context": {}, "awaiting": None})
+    def push(self, session_id: str, user_msg: str, bot_msg: str = None):
+        s = self.get(session_id)
+        s["history"].append({"user": user_msg, "bot": bot_msg})
+    def set_awaiting(self, session_id: str, key: str):
+        self.get(session_id)["awaiting"] = key
+    def clear_awaiting(self, session_id: str):
+        self.get(session_id)["awaiting"] = None
+
+# --- Action executor (simulé) ---
+class ActionExecutor:
+    def __init__(self):
+        self.fake_balance = 1234.56
+    def get_balance(self):
+        return self.fake_balance
+    def transfer(self, amount, target):
+        # vérifie si solde suffisant
+        if amount is None:
+            return False, "Montant invalide."
+        if amount > self.fake_balance:
+            return False, "Solde insuffisant."
+        self.fake_balance -= amount
+        return True, f"transfert de {amount} TND vers {target} effectué."
+
+# --- Response generator (templates + actions) ---
+class Agent:
+    def __init__(self):
+        self.classifier = IntentClassifier(TRAINING_DATA)
+        self.state = DialogueState()
+        self.executor = ActionExecutor()
+    def handle(self, session_id: str, text: str) -> Dict[str,Any]:
+        s = self.state.get(session_id)
+        intent, conf = self.classifier.predict(text)
+        response = ""
+        performed_action = None
+
+        # Si on attend une confirmation de transfert
+        if s.get("awaiting") == "confirm_transfer":
+            if text.lower() in ["oui", "confirm", "ok", "oui stp", "valide"]:
+                ctx = s["context"]
+                amount = ctx.get("transfer_amount")
+                target = ctx.get("transfer_target")
+                ok, msg = self.executor.transfer(amount, target)
+                if ok:
+                    response = random.choice(TEMPLATES["confirm_transfer"]).format(amount=amount, target=target)
+                else:
+                    response = msg
+                self.state.clear_awaiting(session_id)
+                self.state.push(session_id, text, response)
+                return {"intent":"confirm_transfer", "conf":conf, "response":response}
+
+        # Brancher selon l'intent prédit
+        if intent == "greeting":
+            response = random.choice(TEMPLATES["greeting"])
+        elif intent == "create_event":
+            dt = extract_datetime(text)
+            if dt:
+                response = f"Ok, je crée l'événement pour {dt}. Quel est le titre ?"
+            else:
+                response = random.choice(TEMPLATES["create_event"])
+        elif intent == "get_weather":
+            # simple simulation
+            city_match = re.search(r'à\s+([A-Za-zÀ-ÖØ-öø-ÿ\-]+)', text)
+            city = city_match.group(1) if city_match else "votre ville"
+            temp = random.randint(12, 32)
+            response = f"La météo pour {city} : {temp}°C, ciel partiellement nuageux."
+        elif intent == "get_balance":
+            bal = self.executor.get_balance()
+            response = random.choice(TEMPLATES["get_balance"]).format(balance=f"{bal:.2f}")
+        elif intent == "transfer_money":
+            amount = extract_amount(text)
+            target = extract_target(text)
+            if amount is None:
+                response = "Quel montant souhaites-tu transférer ?"
+                # en attente du montant
+                self.state.get(session_id)["context"]["transfer_target"] = target
+                self.state.set_awaiting(session_id, "transfer_amount")
+            else:
+                # demander confirmation
+                self.state.get(session_id)["context"]["transfer_amount"] = amount
+                self.state.get(session_id)["context"]["transfer_target"] = target
+                self.state.set_awaiting(session_id, "confirm_transfer")
+                response = random.choice(TEMPLATES["transfer_money"]).format(amount=amount, target=target)
+        elif intent == "help":
+            response = random.choice(TEMPLATES["help"])
+        elif intent == "thanks":
+            response = random.choice(TEMPLATES["thanks"])
+        elif intent == "goodbye":
+            response = random.choice(TEMPLATES["goodbye"])
+        else:
+            response = random.choice(TEMPLATES["fallback"])
+
+        self.state.push(session_id, text, response)
+        return {"intent": intent, "conf": round(conf,2), "response": response}
+
+# --- Mode CLI pour tester l'agent ---
+def run_cli():
+    agent = Agent()
+    session = "user1"
+    print("Agent IA minimal — mode CLI. Tape 'quit' pour sortir.")
+    while True:
+        text = input("Vous: ").strip()
+        if text.lower() in ("quit", "exit"):
+            print("Bot: Au revoir !")
+            break
+        out = agent.handle(session, text)
+        print("Bot:", out["response"])
+
+# --- API simple avec FastAPI ---
+try:
+    from fastapi import FastAPI
+    from pydantic import BaseModel
+    app = FastAPI()
+    agent_api = Agent()
+    class Query(BaseModel):
+        session_id: str = "default"
+        text: str
+
+    @app.post("/chat")
+    def chat(q: Query):
+        return agent_api.handle(q.session_id, q.text)
+except Exception as e:
+    # FastAPI non installé — on reste en CLI seulement
+    app = None
+
+if __name__ == "__main__":
+    run_cli()
